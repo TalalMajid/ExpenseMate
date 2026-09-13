@@ -1,3 +1,6 @@
+# .db file created when the app ran
+*.db
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
