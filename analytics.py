@@ -38,6 +38,7 @@ def check_budget_alerts(conn, month: str) -> list:
         spent = spent_by_category.get(category_name, 0)
         if limit_amount > 0 and spent / limit_amount >= 0.9:
             alerts.append(
-                f"⚠ {category_name}: spent {spent:.2f} of {limit_amount:.2f} budget ({spent/limit_amount:.0%})"
+                f"⚠ {category_name}: spent ${spent:,.2f} of "
+                f"${limit_amount:,.2f} budget ({spent/limit_amount:.0%})"
             )
     return alerts

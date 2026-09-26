@@ -90,6 +90,20 @@ def delete_transaction(conn: sqlite3.Connection, transaction_id: int) -> None:
     conn.commit()
 
 
+def update_transaction(conn: sqlite3.Connection, transaction_id: int, type_: str,
+                       amount: float, category_id: int, date: str, note: str = "") -> None:
+    """Update an existing income or expense transaction."""
+    conn.execute(
+        """
+        UPDATE transactions
+        SET type = ?, amount = ?, category_id = ?, date = ?, note = ?
+        WHERE id = ?
+        """,
+        (type_, amount, category_id, date, note, transaction_id),
+    )
+    conn.commit()
+
+
 def set_budget(conn: sqlite3.Connection, category_id: int, month: str, limit_amount: float) -> None:
     """Create or update a budget for a category in a given month (format 'YYYY-MM')."""
     conn.execute("""
