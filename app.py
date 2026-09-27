@@ -4,6 +4,7 @@ Run with: streamlit run app.py
 """
 
 from datetime import date
+import hashlib
 import html
 from pathlib import Path
 import tempfile
@@ -16,6 +17,9 @@ import analytics
 import csv_io
 import database as db
 
+
+CURRENCY_SYMBOLS = ("$", "€", "£", "₨")
+DEFAULT_CURRENCY_SYMBOL = "$"
 
 st.set_page_config(page_title="ExpenseMate", page_icon="💰", layout="wide")
 st.markdown(
@@ -60,7 +64,7 @@ category_lookup = {name: category_id for category_id, name in categories}
 
 def money(amount: float) -> str:
     """Format all displayed monetary amounts consistently."""
-    return f"${amount:,.2f}"
+    return f"{currency_symbol}{amount:,.2f}"
 
 
 def money_markup(amount: float, kind: str = "neutral") -> str:
@@ -89,7 +93,7 @@ def expense_frame(frame: pd.DataFrame, month: str | None = None) -> pd.DataFrame
 
 
 def render_budget_alerts(month: str) -> None:
-    alerts = analytics.check_budget_alerts(conn, month)
+    alerts = analytics.check_budget_alerts(conn, month, currency_symbol)
     if alerts:
         for alert in alerts:
             st.warning(alert)
@@ -132,15 +136,34 @@ def budget_chart(frame: pd.DataFrame, month: str) -> None:
         template="plotly_dark",
         legend_title_text="",
         margin=dict(l=10, r=10, t=20, b=10),
-        yaxis=dict(title="Amount", tickprefix="$", tickformat=",.2f"),
+        yaxis=dict(title="Amount", tickprefix=currency_symbol, tickformat=",.2f"),
         xaxis_title="",
         hoverlabel=dict(namelength=-1),
     )
-    figure.update_traces(hovertemplate="%{x}<br>%{data.name}: $%{y:,.2f}<extra></extra>")
+    figure.update_traces(
+        hovertemplate=(
+            f"%{{x}}<br>%{{data.name}}: {currency_symbol}%{{y:,.2f}}<extra></extra>"
+        )
+    )
     st.plotly_chart(figure, width="stretch")
 
 
 st.sidebar.title("💰 ExpenseMate")
+saved_currency_symbol = db.get_setting(
+    conn,
+    "currency_symbol",
+    DEFAULT_CURRENCY_SYMBOL,
+)
+if saved_currency_symbol not in CURRENCY_SYMBOLS:
+    raise ValueError(f"Unsupported saved currency symbol: {saved_currency_symbol}")
+currency_symbol = st.sidebar.selectbox(
+    "Currency symbol",
+    CURRENCY_SYMBOLS,
+    index=CURRENCY_SYMBOLS.index(saved_currency_symbol),
+)
+if currency_symbol != saved_currency_symbol:
+    db.set_setting(conn, "currency_symbol", currency_symbol)
+
 page = st.sidebar.radio(
     "Navigate",
     [
@@ -208,7 +231,12 @@ elif page == "Add Transaction":
         st.subheader("Record a transaction")
         with st.form("add_transaction_form", clear_on_submit=True):
             transaction_type = st.selectbox("Type", ["expense", "income"])
-            amount = st.number_input("Amount ($)", min_value=0.01, step=1.0, format="%.2f")
+            amount = st.number_input(
+                f"Amount ({currency_symbol})",
+                min_value=0.01,
+                step=1.0,
+                format="%.2f",
+            )
             category = st.selectbox("Category", category_names)
             transaction_date = st.date_input("Date", value=today)
             note = st.text_input("Note (optional)")
@@ -294,7 +322,7 @@ elif page == "Transactions":
                         key="edit_type",
                     )
                     edited_amount = st.number_input(
-                        "Amount ($)",
+                        f"Amount ({currency_symbol})",
                         min_value=0.01,
                         value=float(old_amount),
                         step=1.0,
@@ -348,7 +376,7 @@ elif page == "Budgets":
         budget_month = budget_date.strftime("%Y-%m")
         budget_category = st.selectbox("Category", category_names, key="budget_category")
         budget_limit = st.number_input(
-            "Budget limit ($)",
+            f"Budget limit ({currency_symbol})",
             min_value=0.01,
             step=10.0,
             format="%.2f",
@@ -397,7 +425,11 @@ elif page == "Analytics":
             else:
                 pie = px.pie(summary, names="category", values="amount")
                 pie.update_layout(template="plotly_dark", margin=dict(l=10, r=10, t=20, b=10))
-                pie.update_traces(hovertemplate="%{label}: $%{value:,.2f}<extra></extra>")
+                pie.update_traces(
+                    hovertemplate=(
+                        f"%{{label}}: {currency_symbol}%{{value:,.2f}}<extra></extra>"
+                    )
+                )
                 st.plotly_chart(pie, width="stretch")
     with budget_col:
         with st.container(border=True):
@@ -409,24 +441,45 @@ elif page == "Import/Export":
     with export_col:
         with st.container(border=True):
             st.subheader("Export")
-            if st.button("Export transactions to CSV"):
-                with tempfile.TemporaryDirectory(prefix="expensemate-export-") as temp_dir:
-                    export_path = Path(temp_dir) / "transactions_export.csv"
-                    csv_io.export_transactions_csv(conn, export_path)
-                    export_data = export_path.read_bytes()
-                st.download_button(
-                    "Download CSV",
-                    data=export_data,
-                    file_name="transactions_export.csv",
-                    mime="text/csv",
-                )
+            with tempfile.TemporaryDirectory(prefix="expensemate-export-") as temp_dir:
+                export_path = Path(temp_dir) / "transactions_export.csv"
+                csv_io.export_transactions_csv(conn, export_path)
+                export_data = export_path.read_bytes()
+            st.download_button(
+                "Download CSV",
+                data=export_data,
+                file_name="transactions_export.csv",
+                mime="text/csv",
+            )
     with import_col:
         with st.container(border=True):
             st.subheader("Import")
             uploaded = st.file_uploader("Choose a CSV file", type="csv")
-            if uploaded is not None and st.button("Import transactions"):
+            uploaded_bytes = uploaded.getvalue() if uploaded is not None else b""
+            uploaded_digest = (
+                hashlib.sha256(uploaded_bytes).hexdigest()
+                if uploaded is not None
+                else None
+            )
+            last_imported_digest = st.session_state.get("last_imported_file_digest")
+            duplicate_upload = (
+                uploaded_digest is not None
+                and uploaded_digest == last_imported_digest
+            )
+            if duplicate_upload:
+                st.info(
+                    f"{st.session_state['last_imported_file_name']} has already been "
+                    "imported. Choose a different CSV to continue."
+                )
+            import_clicked = st.button(
+                "Import transactions",
+                disabled=duplicate_upload,
+            )
+            if uploaded is not None and not duplicate_upload and import_clicked:
                 with tempfile.TemporaryDirectory(prefix="expensemate-import-") as temp_dir:
                     import_path = Path(temp_dir) / "transactions_import.csv"
-                    import_path.write_bytes(uploaded.getvalue())
+                    import_path.write_bytes(uploaded_bytes)
                     count = csv_io.import_transactions_csv(conn, import_path)
+                st.session_state["last_imported_file_name"] = uploaded.name
+                st.session_state["last_imported_file_digest"] = uploaded_digest
                 st.success(f"Imported {count} transactions.")

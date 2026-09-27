@@ -54,3 +54,18 @@ def test_update_transaction():
     updated = db.get_transactions(conn)[0]
 
     assert updated == (transaction_id, "income", 75.5, "Salary", "2026-09-14", "Refund")
+
+
+def test_application_settings_persist_between_connections(tmp_path):
+    db_path = tmp_path / "expensemate.db"
+    conn = db.get_connection(db_path)
+    db.init_db(conn)
+
+    assert db.get_setting(conn, "currency_symbol", "$") == "$"
+    db.set_setting(conn, "currency_symbol", "€")
+    conn.close()
+
+    reopened_conn = db.get_connection(db_path)
+    db.init_db(reopened_conn)
+    assert db.get_setting(reopened_conn, "currency_symbol", "$") == "€"
+    reopened_conn.close()
