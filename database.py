@@ -4,15 +4,24 @@ All direct database reads/writes should go through this module only,
 per the Layered architecture decided for this project.
 """
 
+import os
 import sqlite3
 from pathlib import Path
+from typing import Optional, Union
 
 DB_PATH = Path(__file__).parent / "expensemate.db"
 
 
-def get_connection(db_path=DB_PATH) -> sqlite3.Connection:
+def get_connection(
+    db_path: Optional[Union[str, Path]] = None,
+) -> sqlite3.Connection:
     """Open (or create) the SQLite database file and return a connection."""
-    conn = sqlite3.connect(db_path)
+    resolved_db_path = (
+        db_path
+        if db_path is not None
+        else os.environ.get("EXPENSEMATE_DB_PATH", DB_PATH)
+    )
+    conn = sqlite3.connect(resolved_db_path)
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
@@ -46,6 +55,12 @@ def init_db(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (category_id) REFERENCES categories(id)
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+    """)
     conn.commit()
 
     default_categories = ["Food", "Transport", "Rent", "Utilities", "Entertainment", "Salary", "Other"]
@@ -59,13 +74,19 @@ def add_category(conn: sqlite3.Connection, name: str) -> None:
     conn.commit()
 
 
-def get_categories(conn: sqlite3.Connection) -> list:
+def get_categories(conn: sqlite3.Connection) -> list[tuple[int, str]]:
     """Return all categories as (id, name) tuples."""
     return conn.execute("SELECT id, name FROM categories ORDER BY name").fetchall()
 
 
-def add_transaction(conn: sqlite3.Connection, type_: str, amount: float,
-                     category_id: int, date: str, note: str = "") -> None:
+def add_transaction(
+    conn: sqlite3.Connection,
+    type_: str,
+    amount: float,
+    category_id: int,
+    date: str,
+    note: str = "",
+) -> None:
     """Insert a new income or expense transaction."""
     conn.execute(
         "INSERT INTO transactions (type, amount, category_id, date, note) VALUES (?, ?, ?, ?, ?)",
@@ -74,7 +95,9 @@ def add_transaction(conn: sqlite3.Connection, type_: str, amount: float,
     conn.commit()
 
 
-def get_transactions(conn: sqlite3.Connection) -> list:
+def get_transactions(
+    conn: sqlite3.Connection,
+) -> list[tuple[int, str, float, str, str, Optional[str]]]:
     """Return all transactions joined with their category name."""
     return conn.execute("""
         SELECT t.id, t.type, t.amount, c.name, t.date, t.note
@@ -90,7 +113,33 @@ def delete_transaction(conn: sqlite3.Connection, transaction_id: int) -> None:
     conn.commit()
 
 
-def set_budget(conn: sqlite3.Connection, category_id: int, month: str, limit_amount: float) -> None:
+def update_transaction(
+    conn: sqlite3.Connection,
+    transaction_id: int,
+    type_: str,
+    amount: float,
+    category_id: int,
+    date: str,
+    note: str = "",
+) -> None:
+    """Update an existing income or expense transaction."""
+    conn.execute(
+        """
+        UPDATE transactions
+        SET type = ?, amount = ?, category_id = ?, date = ?, note = ?
+        WHERE id = ?
+        """,
+        (type_, amount, category_id, date, note, transaction_id),
+    )
+    conn.commit()
+
+
+def set_budget(
+    conn: sqlite3.Connection,
+    category_id: int,
+    month: str,
+    limit_amount: float,
+) -> None:
     """Create or update a budget for a category in a given month (format 'YYYY-MM')."""
     conn.execute("""
         INSERT INTO budgets (category_id, month, limit_amount) VALUES (?, ?, ?)
@@ -99,7 +148,10 @@ def set_budget(conn: sqlite3.Connection, category_id: int, month: str, limit_amo
     conn.commit()
 
 
-def get_budgets(conn: sqlite3.Connection, month: str) -> list:
+def get_budgets(
+    conn: sqlite3.Connection,
+    month: str,
+) -> list[tuple[int, str, float]]:
     """Return all budgets for a given month, joined with category name."""
     return conn.execute("""
         SELECT b.id, c.name, b.limit_amount
@@ -107,3 +159,24 @@ def get_budgets(conn: sqlite3.Connection, month: str) -> list:
         JOIN categories c ON b.category_id = c.id
         WHERE b.month = ?
     """, (month,)).fetchall()
+
+
+def get_setting(conn: sqlite3.Connection, key: str, default: str) -> str:
+    """Return a stored application setting, or its default when unset."""
+    row = conn.execute(
+        "SELECT value FROM app_settings WHERE key = ?",
+        (key,),
+    ).fetchone()
+    return default if row is None else row[0]
+
+
+def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
+    """Create or replace an application setting."""
+    conn.execute(
+        """
+        INSERT INTO app_settings (key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        (key, value),
+    )
+    conn.commit()

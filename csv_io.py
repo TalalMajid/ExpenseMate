@@ -1,17 +1,27 @@
 """CSV import/export for ExpenseMate transactions."""
 
+import sqlite3
+from pathlib import Path
+from typing import Union
+
 import pandas as pd
 import database as db
 
 
-def export_transactions_csv(conn, filepath) -> None:
+def export_transactions_csv(
+    conn: sqlite3.Connection,
+    filepath: Union[str, Path],
+) -> None:
     """Write all transactions to a CSV file."""
     rows = db.get_transactions(conn)
     df = pd.DataFrame(rows, columns=["id", "type", "amount", "category", "date", "note"])
     df.to_csv(filepath, index=False)
 
 
-def import_transactions_csv(conn, filepath) -> int:
+def import_transactions_csv(
+    conn: sqlite3.Connection,
+    filepath: Union[str, Path],
+) -> int:
     """Read a CSV of transactions and insert each row into the database.
 
     Expected columns: type, amount, category, date, note (id is ignored/regenerated).
